@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -23,8 +23,8 @@ const actividadesBase = [
     participantes: 120,
     asistentesConfirmados: 48,
     inscritos: ["asistente1@uspg.edu", "asistente2@uspg.edu"],
-    creador: "Carlos Mendez (c.mendez) - Rango 2",
-    aprobador: "Rango Q",
+    creador: "Carlos Mendez (c.mendez)",
+    aprobador: "Carlos Mendez",
     estado: "Aprobada",
     certificados: "Plantilla cargada",
     emiteCertificado: true,
@@ -71,8 +71,8 @@ const actividadesBase = [
     participantes: 65,
     asistentesConfirmados: 22,
     inscritos: [],
-    creador: "Carlos Mendez (c.mendez) - Rango 2",
-    aprobador: "Rango Q",
+    creador: "Carlos Mendez (c.mendez)",
+    aprobador: "Carlos Mendez",
     estado: "Aprobada",
     certificados: "Listo para emitir",
     emiteCertificado: true,
@@ -90,14 +90,14 @@ const usuarioAutenticado = {
 const cuentasAsistentesDemo = [
   { email: "alumno@uspg.edu.gt", password: "123456", nombre: "Ana Lopez", rol: "alumno" },
   { email: "evento@uspg.edu.gt", password: "123456", nombre: "Luis Perez", rol: "event-creaator" },
-  { email: "admin@uspg.edu.gt", password: "admin123", nombre: "Admin Eventos", rol: "admin-eventos" },
+  { email: "admin@uspg.edu.gt", password: "admin123", nombre: "Carlos Mendez", rol: "admin-eventos" },
 ];
 
 const estadoInicialFormulario = {
   nombre: "",
   fecha: "",
   horaInicio: "",
-  horaFin: "",
+  duracionMinutos: "60",
   tipo: "Deportiva",
   modalidad: "Presencial",
   costo: "Gratuita",
@@ -134,10 +134,78 @@ function valorCosto(actividad) {
   return `Q ${Number(actividad.monto || 0).toFixed(2)}`;
 }
 
+const duracionesEventoHoras = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12];
+const duracionesEventoMinutos = duracionesEventoHoras.map((horas) => horas * 60);
+
+function formatDuracion(minutos) {
+  const total = Number(minutos);
+  if (!Number.isFinite(total) || total <= 0) return "";
+  if (total % 60 === 0) {
+    const horas = total / 60;
+    return horas === 1 ? "1 hora" : `${horas} horas`;
+  }
+  return `${total} min`;
+}
+
+function parseHora(hora) {
+  if (!hora || !/^\d{2}:\d{2}$/.test(hora)) return null;
+  const [horas, minutos] = hora.split(":").map(Number);
+  if (Number.isNaN(horas) || Number.isNaN(minutos)) return null;
+  if (horas < 0 || horas > 23 || minutos < 0 || minutos > 59) return null;
+  return horas * 60 + minutos;
+}
+
+function formatHora(totalMinutos) {
+  const minutosDia = 24 * 60;
+  const normalizado = ((totalMinutos % minutosDia) + minutosDia) % minutosDia;
+  const horas = Math.floor(normalizado / 60);
+  const minutos = normalizado % 60;
+  return `${String(horas).padStart(2, "0")}:${String(minutos).padStart(2, "0")}`;
+}
+
+function calcularHoraFin(horaInicio, duracionMinutos) {
+  const inicioMinutos = parseHora(horaInicio);
+  const duracion = Number(duracionMinutos);
+  if (inicioMinutos === null || !Number.isFinite(duracion) || duracion <= 0) return "";
+  return formatHora(inicioMinutos + duracion);
+}
+
+function calcularDuracionMinutos(horaInicio, horaFin) {
+  const inicioMinutos = parseHora(horaInicio);
+  const finMinutos = parseHora(horaFin);
+  if (inicioMinutos === null || finMinutos === null) return 60;
+
+  let diferencia = finMinutos - inicioMinutos;
+  if (diferencia <= 0) diferencia += 24 * 60;
+  return diferencia;
+}
+
+function segmentosHorario(horaInicio, horaFin) {
+  const inicio = parseHora(horaInicio);
+  const fin = parseHora(horaFin);
+  if (inicio === null || fin === null) return [];
+
+  if (inicio < fin) return [[inicio, fin]];
+  if (inicio > fin) return [[inicio, 24 * 60], [0, fin]];
+  return [[inicio, 24 * 60], [0, fin]];
+}
+
+function horariosSeTraslapan(horaInicioA, horaFinA, horaInicioB, horaFinB) {
+  const segmentosA = segmentosHorario(horaInicioA, horaFinA);
+  const segmentosB = segmentosHorario(horaInicioB, horaFinB);
+  if (!segmentosA.length || !segmentosB.length) return false;
+
+  return segmentosA.some(([inicioA, finA]) =>
+    segmentosB.some(([inicioB, finB]) => inicioA < finB && inicioB < finA)
+  );
+}
+
 export default function OtrasActividadesPage() {
   const [actividades, setActividades] = useState(actividadesBase);
   const [formData, setFormData] = useState(estadoInicialFormulario);
+  const [actividadEnEdicionId, setActividadEnEdicionId] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [actividadDetalle, setActividadDetalle] = useState(null);
   const [actividadRevision, setActividadRevision] = useState("");
   const [observacionRevision, setObservacionRevision] = useState("");
   const [mensajeDemo, setMensajeDemo] = useState("");
@@ -161,6 +229,21 @@ export default function OtrasActividadesPage() {
   const puedeAceptarEventos = sesionModulo?.rol === "admin-eventos";
   const puedeInscribirseEvento = sesionModulo?.rol === "alumno";
   const puedeVerEstadisticas = sesionModulo?.rol !== "alumno";
+  const horaFinCalculada = calcularHoraFin(formData.horaInicio, formData.duracionMinutos);
+  const duracionSeleccionada = String(formData.duracionMinutos || "60");
+  const duracionPersonalizada =
+    Number(duracionSeleccionada) > 0 &&
+    !duracionesEventoMinutos.includes(Number(duracionSeleccionada));
+
+  useEffect(() => {
+    if (!mensajeDemo) return undefined;
+
+    const timerId = setTimeout(() => {
+      setMensajeDemo("");
+    }, 5000);
+
+    return () => clearTimeout(timerId);
+  }, [mensajeDemo]);
 
   const actividadesFiltradas = useMemo(() => {
     const termino = busqueda.trim().toLowerCase();
@@ -314,6 +397,78 @@ export default function OtrasActividadesPage() {
 
   function limpiarFormulario() {
     setFormData(estadoInicialFormulario);
+    setActividadEnEdicionId("");
+  }
+
+  function cargarActividadEnFormulario(actividad) {
+    const modalidadNormalizada =
+      String(actividad.modalidad || "").trim().toLowerCase().includes("virtual")
+        ? "Virtual"
+        : "Presencial";
+    const esActividadVirtual = modalidadNormalizada === "Virtual";
+
+    setFormData({
+      nombre: actividad.nombre || "",
+      fecha: actividad.fecha || "",
+      horaInicio: actividad.horaInicio || "",
+      duracionMinutos: String(calcularDuracionMinutos(actividad.horaInicio, actividad.horaFin)),
+      tipo: actividad.tipo || "Deportiva",
+      modalidad: modalidadNormalizada,
+      costo: actividad.costo || "Gratuita",
+      monto: actividad.costo === "Pago" ? String(actividad.monto || "") : "",
+      ubicacion: esActividadVirtual || actividad.ubicacion === "Actividad virtual" ? "" : actividad.ubicacion || "",
+      mapaUrl: esActividadVirtual ? "" : actividad.mapaUrl || "",
+      meetUrl: esActividadVirtual ? actividad.meetUrl || "" : "",
+      usarMapa: !esActividadVirtual,
+      emiteCertificado: Boolean(actividad.emiteCertificado),
+      participantes: String(actividad.participantes ?? ""),
+      descripcion: actividad.descripcion || "",
+      plantillaNombre: "",
+    });
+  }
+
+  function editarActividadBorrador(actividadId) {
+    const actividad = actividades.find((item) => item.id === actividadId && item.estado === "Borrador");
+    if (!actividad) {
+      setMensajeDemo("Solo puedes editar actividades en estado borrador.");
+      return;
+    }
+
+    setActividadEnEdicionId(actividad.id);
+    cargarActividadEnFormulario(actividad);
+    setMensajeDemo(`Editando borrador ${actividad.id}.`);
+  }
+
+  function enviarBorradorARevision(actividadId) {
+    let actualizado = false;
+
+    setActividades((prev) =>
+      prev.map((actividad) => {
+        if (actividad.id !== actividadId || actividad.estado !== "Borrador") return actividad;
+        actualizado = true;
+        return {
+          ...actividad,
+          estado: "Pendiente",
+          aprobador: "Pendiente",
+          observacionAprobacion: "",
+          certificados: actividad.emiteCertificado
+            ? actividad.certificados === "Plantilla cargada"
+              ? "Plantilla cargada"
+              : "Pendiente plantilla"
+            : "No aplica",
+        };
+      })
+    );
+
+    if (!actualizado) {
+      setMensajeDemo("Solo puedes enviar a aprobacion actividades en estado borrador.");
+      return;
+    }
+
+    if (actividadEnEdicionId === actividadId) {
+      limpiarFormulario();
+    }
+    setMensajeDemo(`Actividad ${actividadId} enviada a aprobacion.`);
   }
 
   function handleAccesoModuloChange(event) {
@@ -361,6 +516,34 @@ export default function OtrasActividadesPage() {
       return;
     }
 
+    const eventoObjetivo = actividades.find((actividad) => actividad.id === eventoId);
+    if (!eventoObjetivo) {
+      setMensajeDemo("No se encontro el evento seleccionado.");
+      return;
+    }
+
+    const conflictoHorario = actividades.find((actividad) => {
+      if (actividad.id === eventoId) return false;
+      if (actividad.fecha !== eventoObjetivo.fecha) return false;
+
+      const inscritosActuales = Array.isArray(actividad.inscritos) ? actividad.inscritos : [];
+      if (!inscritosActuales.includes(sesionModulo.email)) return false;
+
+      return horariosSeTraslapan(
+        eventoObjetivo.horaInicio,
+        eventoObjetivo.horaFin,
+        actividad.horaInicio,
+        actividad.horaFin
+      );
+    });
+
+    if (conflictoHorario) {
+      setMensajeDemo(
+        `No puedes inscribirte en ${eventoObjetivo.id} porque se traslapa con ${conflictoHorario.id}.`
+      );
+      return;
+    }
+
     let inscrito = false;
     let cupoLleno = false;
 
@@ -403,18 +586,25 @@ export default function OtrasActividadesPage() {
   }
 
   function crearActividad(estadoObjetivo) {
-    if (!formData.nombre.trim() || !formData.fecha || !formData.horaInicio || !formData.horaFin) {
-      setMensajeDemo("Completa nombre de actividad, fecha del evento, hora de inicio y hora de final.");
+    if (!formData.nombre.trim() || !formData.fecha || !formData.horaInicio) {
+      setMensajeDemo("Completa nombre de actividad, fecha del evento y hora de inicio.");
+      return;
+    }
+
+    const duracionMinutos = Number(formData.duracionMinutos);
+    if (!Number.isFinite(duracionMinutos) || duracionMinutos <= 0) {
+      setMensajeDemo("Selecciona una duracion valida para el evento.");
+      return;
+    }
+
+    const horaFinEvento = calcularHoraFin(formData.horaInicio, duracionMinutos);
+    if (!horaFinEvento) {
+      setMensajeDemo("No se pudo calcular la hora de finalizacion del evento.");
       return;
     }
 
     if (formData.fecha < hoyIso) {
       setMensajeDemo("La fecha del evento no puede ser menor a la fecha actual.");
-      return;
-    }
-
-    if (formData.horaFin <= formData.horaInicio) {
-      setMensajeDemo("La hora final no puede ser menor o igual a la hora inicial.");
       return;
     }
 
@@ -446,8 +636,12 @@ export default function OtrasActividadesPage() {
       }
     }
 
+    const actividadExistente = actividadEnEdicionId
+      ? actividades.find((item) => item.id === actividadEnEdicionId)
+      : null;
+
     const nuevaActividad = {
-      id: generarIdActividad(actividades.length),
+      id: actividadExistente ? actividadExistente.id : generarIdActividad(actividades.length),
       nombre: formData.nombre.trim(),
       tipo: formData.tipo,
       ubicacion: esPresencial ? formData.ubicacion.trim() : "Actividad virtual",
@@ -458,10 +652,10 @@ export default function OtrasActividadesPage() {
       monto: formData.costo === "Pago" ? formData.monto || "0" : "0",
       fecha: formData.fecha,
       horaInicio: formData.horaInicio,
-      horaFin: formData.horaFin,
+      horaFin: horaFinEvento,
       participantes: Number(formData.participantes) || 0,
-      asistentesConfirmados: 0,
-      inscritos: [],
+      asistentesConfirmados: actividadExistente ? actividadExistente.asistentesConfirmados : 0,
+      inscritos: actividadExistente ? actividadExistente.inscritos : [],
       creador: `${usuarioAutenticado.nombre} (${usuarioAutenticado.usuario}) - ${usuarioAutenticado.rol}`,
       aprobador: estadoObjetivo === "Pendiente" ? "Pendiente" : "Sin enviar",
       estado: estadoObjetivo,
@@ -475,11 +669,22 @@ export default function OtrasActividadesPage() {
       observacionAprobacion: "",
     };
 
-    setActividades((prev) => [nuevaActividad, ...prev]);
+    if (actividadExistente) {
+      setActividades((prev) =>
+        prev.map((actividad) => (actividad.id === actividadExistente.id ? nuevaActividad : actividad))
+      );
+    } else {
+      setActividades((prev) => [nuevaActividad, ...prev]);
+    }
+
     setMensajeDemo(
       estadoObjetivo === "Pendiente"
-        ? `Actividad ${nuevaActividad.id} enviada a aprobacion.`
-        : `Actividad ${nuevaActividad.id} guardada como borrador.`
+        ? actividadExistente
+          ? `Actividad ${nuevaActividad.id} actualizada y enviada a aprobacion.`
+          : `Actividad ${nuevaActividad.id} enviada a aprobacion.`
+        : actividadExistente
+          ? `Actividad ${nuevaActividad.id} actualizada como borrador.`
+          : `Actividad ${nuevaActividad.id} guardada como borrador.`
     );
     limpiarFormulario();
   }
@@ -505,14 +710,14 @@ export default function OtrasActividadesPage() {
         return {
           ...actividad,
           estado: nuevoEstado,
-          aprobador: "Rango Q",
+          aprobador: "Carlos Mendez",
           certificados,
           observacionAprobacion: observacionRevision.trim(),
         };
       })
     );
 
-    setMensajeDemo(`Actividad ${idObjetivo} ${nuevoEstado.toLowerCase()} por Rango Q.`);
+    setMensajeDemo(`Actividad ${idObjetivo} ${nuevoEstado.toLowerCase()} por Carlos Mendez.`);
     setObservacionRevision("");
     setActividadRevision("");
   }
@@ -607,16 +812,36 @@ export default function OtrasActividadesPage() {
                 Registro, aprobacion y visualizacion de actividades.
               </small>
             </div>
-            <div className="mt-2 mt-md-0">
-              <span className="badge badge-info mr-2">Crea: Rango 2</span>
-              <span className="badge badge-secondary">Aprueba: Rango Q</span>
-            </div>
+           {sesionModulo ? ( <div className="mt-2 mt-md-0">
+              <span className="badge badge-info mr-2">Crea: Eventos</span>
+              <span className="badge badge-secondary">Aprueba: {sesionModulo.nombre}</span>
+            </div> ): null}
           </div>
 
           <div className="card-body">
             {mensajeDemo ? (
-              <div className="alert alert-info" role="alert">
-                {mensajeDemo}
+              <div
+                className="alert alert-warning shadow"
+                role="alert"
+                style={{
+                  position: "fixed",
+                  top: "16px",
+                  right: "16px",
+                  zIndex: 1050,
+                  minWidth: "280px",
+                  maxWidth: "420px",
+                }}
+              >
+                <div className="d-flex justify-content-between align-items-start">
+                  <span className="pr-2">{mensajeDemo}</span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() => setMensajeDemo("")}
+                  >
+                    Cerrar
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -669,7 +894,7 @@ export default function OtrasActividadesPage() {
               <>
                 <div className="d-flex justify-content-between align-items-center flex-wrap mb-3 p-2 border rounded">
                   <div>
-                    <span className="badge badge-info mr-2">Bienvenid@</span>
+                    <span className=" mr-2">Bienvenid@,</span>
                     <strong>{sesionModulo.nombre}</strong> 
                   </div>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={cerrarSesionModulo}>
@@ -680,27 +905,27 @@ export default function OtrasActividadesPage() {
             {puedeVerEstadisticas ? (
             <div className="row mb-4">
               <div className="col-md-3 col-sm-6 mb-3">
-                <div className="border rounded p-3 h-100">
-                  <p className="mb-1 text-muted">Total actividades</p>
-                  <h4 className="mb-0">{metricas.total}</h4>
+                <div className="border bg-warning rounded p-3 h-100">
+                  <p className="mb-1 text-white">Total actividades</p>
+                  <h4 className="mb-0 text-white font-bold">{metricas.total}</h4>
+                </div>
+              </div>
+              <div className="col-md-3  col-sm-6 mb-3">
+                <div className="border bg-danger rounded p-3 h-100">
+                  <p className="mb-1 text-white">Pendientes de aprobar</p>
+                  <h4 className="mb-0 text-white">{metricas.pendientes}</h4>
                 </div>
               </div>
               <div className="col-md-3 col-sm-6 mb-3">
-                <div className="border rounded p-3 h-100">
-                  <p className="mb-1 text-muted">Pendientes de aprobar</p>
-                  <h4 className="mb-0">{metricas.pendientes}</h4>
+                <div className="border bg-primary rounded p-3 h-100">
+                  <p className="mb-1  text-white">Participantes proyectados</p>
+                  <h4 className="mb-0 text-white">{metricas.participantes.toLocaleString()}</h4>
                 </div>
               </div>
               <div className="col-md-3 col-sm-6 mb-3">
-                <div className="border rounded p-3 h-100">
-                  <p className="mb-1 text-muted">Participantes proyectados</p>
-                  <h4 className="mb-0">{metricas.participantes.toLocaleString()}</h4>
-                </div>
-              </div>
-              <div className="col-md-3 col-sm-6 mb-3">
-                <div className="border rounded p-3 h-100">
-                  <p className="mb-1 text-muted">Asistentes confirmados</p>
-                  <h4 className="mb-0">{metricas.confirmados.toLocaleString()}</h4>
+                <div className="border bg-success rounded p-3 h-100">
+                  <p className="mb-1 text-white">Asistentes confirmados</p>
+                  <h4 className="mb-0 text-white">{metricas.confirmados.toLocaleString()}</h4>
                 </div>
               </div>
             </div>
@@ -711,7 +936,11 @@ export default function OtrasActividadesPage() {
               <div className={puedeAceptarEventos ? "col-lg-8 mb-4" : "col-lg-12 mb-4"}>
                 <div className="card mb-0">
                   <div className="card-header">
-                    <h5 className="mb-0">Crear actividad (Rango 2)</h5>
+                    <h5 className="mb-0">
+                      {actividadEnEdicionId
+                        ? `Editar actividad ${actividadEnEdicionId} (Rango 2)`
+                        : "Crear actividad (Rango 2)"}
+                    </h5>
                   </div>
                   <div className="card-body">
                     <form onSubmit={(event) => event.preventDefault()}>
@@ -741,7 +970,7 @@ export default function OtrasActividadesPage() {
                             onChange={handleChange}
                           />
                         </div>
-                        <div className="form-group col-md-4">
+                        <div className="form-group col-md-3">
                           <label htmlFor="actividadFecha">Fecha del evento</label>
                           <input
                             id="actividadFecha"
@@ -753,7 +982,7 @@ export default function OtrasActividadesPage() {
                             onChange={handleChange}
                           />
                         </div>
-                        <div className="form-group col-md-4">
+                        <div className="form-group col-md-3">
                           <label htmlFor="actividadHoraInicio">Hora de inicio</label>
                           <input
                             id="actividadHoraInicio"
@@ -764,16 +993,33 @@ export default function OtrasActividadesPage() {
                             onChange={handleChange}
                           />
                         </div>
-                        <div className="form-group col-md-4">
-                          <label htmlFor="actividadHoraFin">Hora de final</label>
+                        <div className="form-group col-md-3">
+                          <label htmlFor="actividadDuracion">Duracion del evento (horas)</label>
+                          <select
+                            id="actividadDuracion"
+                            name="duracionMinutos"
+                            className="form-control"
+                            value={duracionSeleccionada}
+                            onChange={handleChange}
+                          >
+                            {duracionesEventoHoras.map((horas) => (
+                              <option key={horas} value={String(horas * 60)}>
+                                {horas === 1 ? "1 hora" : `${horas} horas`}
+                              </option>
+                            ))}
+                            {duracionPersonalizada ? (
+                              <option value={duracionSeleccionada}>{formatDuracion(duracionSeleccionada)}</option>
+                            ) : null}
+                          </select>
+                        </div>
+                        <div className="form-group col-md-3">
+                          <label htmlFor="actividadHoraFinCalculada">Hora de finalizacion (calculada)</label>
                           <input
-                            id="actividadHoraFin"
-                            name="horaFin"
+                            id="actividadHoraFinCalculada"
                             type="time"
                             className="form-control"
-                            min={formData.horaInicio || undefined}
-                            value={formData.horaFin}
-                            onChange={handleChange}
+                            value={horaFinCalculada}
+                            readOnly
                           />
                         </div>
                       </div>
@@ -939,7 +1185,7 @@ export default function OtrasActividadesPage() {
                           className="btn btn-primary mr-2 mb-2"
                           onClick={() => crearActividad("Borrador")}
                         >
-                          Guardar borrador
+                          {actividadEnEdicionId ? "Guardar cambios" : "Guardar borrador"}
                         </button>
                         <button
                           type="button"
@@ -953,7 +1199,7 @@ export default function OtrasActividadesPage() {
                           className="btn btn-outline-secondary mb-2"
                           onClick={limpiarFormulario}
                         >
-                          Limpiar formulario
+                          {actividadEnEdicionId ? "Cancelar edicion" : "Limpiar formulario"}
                         </button>
                       </div>
                     </form>
@@ -1003,6 +1249,88 @@ export default function OtrasActividadesPage() {
                         )}
                       </select>
                     </div>
+
+                    {actividadRevisionActual ? (
+                      <div className="border rounded p-3 mb-3 bg-light">
+                        <h6 className="mb-3">Detalle completo del evento a aprobar</h6>
+                        <div className="row">
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Codigo</small>
+                            <strong>{actividadRevisionActual.id}</strong>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Estado actual</small>
+                            <span className={`badge ${badgeEstadoClass(actividadRevisionActual.estado)}`}>
+                              {actividadRevisionActual.estado}
+                            </span>
+                          </div>
+                          <div className="col-md-12 mb-2">
+                            <small className="text-muted d-block">Nombre</small>
+                            <strong>{actividadRevisionActual.nombre}</strong>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Tipo</small>
+                            <span>{actividadRevisionActual.tipo}</span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Modalidad</small>
+                            <span>{actividadRevisionActual.modalidad}</span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Fecha</small>
+                            <span>{actividadRevisionActual.fecha}</span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Horario</small>
+                            <span>
+                              {actividadRevisionActual.horaInicio || "-"} - {actividadRevisionActual.horaFin || "-"}
+                              {actividadRevisionActual.horaInicio && actividadRevisionActual.horaFin ? (
+                                <> ({formatDuracion(calcularDuracionMinutos(actividadRevisionActual.horaInicio, actividadRevisionActual.horaFin))})</>
+                              ) : null}
+                            </span>
+                          </div>
+                          <div className="col-md-12 mb-2">
+                            <small className="text-muted d-block">
+                              {actividadRevisionActual.modalidad === "Virtual" ? "Enlace virtual" : "Ubicacion"}
+                            </small>
+                            {actividadRevisionActual.modalidad === "Virtual" && actividadRevisionActual.meetUrl ? (
+                              <a href={actividadRevisionActual.meetUrl} target="_blank" rel="noreferrer">
+                                {actividadRevisionActual.meetUrl}
+                              </a>
+                            ) : (
+                              <span>{actividadRevisionActual.ubicacion || "-"}</span>
+                            )}
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Costo</small>
+                            <span>{valorCosto(actividadRevisionActual)}</span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Participantes / Confirmados</small>
+                            <span>
+                              {Number(actividadRevisionActual.participantes) || 0} / {Number(actividadRevisionActual.asistentesConfirmados) || 0}
+                            </span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Creador</small>
+                            <span>{actividadRevisionActual.creador || "-"}</span>
+                          </div>
+                          <div className="col-md-6 mb-2">
+                            <small className="text-muted d-block">Certificados</small>
+                            <span>{actividadRevisionActual.certificados || "-"}</span>
+                          </div>
+                          <div className="col-md-12 mb-0">
+                            <small className="text-muted d-block">Descripcion</small>
+                            <span>{actividadRevisionActual.descripcion || "Sin descripcion"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="alert alert-light border" role="alert">
+                        No hay actividad seleccionada para revisar.
+                      </div>
+                    )}
+
                     <div className="form-group">
                       <label htmlFor="observacion">Observacion de aprobacion</label>
                       <textarea
@@ -1057,7 +1385,7 @@ export default function OtrasActividadesPage() {
                         <th>Fecha</th>
                         <th>Horario</th>
                         <th>Cupos</th>
-                        <th>Confirmados</th>
+                        <th>Precio</th>
                         <th>Accion</th>
                       </tr>
                     </thead>
@@ -1065,6 +1393,8 @@ export default function OtrasActividadesPage() {
                       {eventosInscripcion.map((evento) => {
                         const confirmados = Number(evento.asistentesConfirmados) || 0;
                         const capacidad = Number(evento.participantes) || 0;
+                        const montoEvento = Number(evento.monto) || 0;
+                        const precioTexto = montoEvento > 0 ? `Q ${montoEvento.toFixed(2)}` : "Gratuito";
                         const yaInscrito =
                           sesionModulo &&
                           Array.isArray(evento.inscritos) &&
@@ -1080,7 +1410,7 @@ export default function OtrasActividadesPage() {
                               {evento.horaInicio} - {evento.horaFin}
                             </td>
                             <td>{capacidad}</td>
-                            <td>{confirmados}</td>
+                            <td>{precioTexto}</td>
                             <td>
                               <button
                                 type="button"
@@ -1113,7 +1443,52 @@ export default function OtrasActividadesPage() {
               <div className="card-header">
                 <h5 className="mb-0">Reporte detallado de actividades</h5>
               </div>
+              
               <div className="card-body">
+                <div className="row mb-3">
+                  <div className="col-md-1 col-6 mb-2">
+                    <div className="border bg-light rounded p-2 h-100">
+                      <small className="text-muted d-block">Total</small>
+                      <strong>{resumenReporte.total}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-1 col-6 mb-2">
+                    <div className="border bg-light rounded p-2 h-100">
+                      <small className="text-muted d-block">Aprobadas</small>
+                      <strong>{resumenReporte.aprobadas}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-1 col-6 mb-2">
+                    <div className="border bg-light rounded p-2 h-100">
+                      <small className="text-muted d-block">Pendientes</small>
+                      <strong>{resumenReporte.pendientes}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-2 col-6 mb-2">
+                    <div className="border bg-light rounded p-2 h-100">
+                      <small className="text-muted d-block">Presenciales</small>
+                      <strong>{resumenReporte.presenciales}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-2 col-6 mb-2">
+                    <div className="border bg-light rounded p-2 h-100">
+                      <small className="text-muted d-block">Virtuales</small>
+                      <strong>{resumenReporte.virtuales}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-2 col-6 mb-2">
+                    <div className="border rounded p-2 h-100">
+                      <small className="text-muted d-block">Ingresos</small>
+                      <strong>Q {resumenReporte.ingresos.toFixed(2)}</strong>
+                    </div>
+                  </div>
+                  <div className="col-md-2 col-6 mb-2">
+                    <div className="border rounded p-2 h-100">
+                      <small className="text-muted d-block">Confirmados</small>
+                      <strong>{resumenReporte.confirmados}</strong>
+                    </div>
+                  </div>
+                </div>
                 <div className="form-row align-items-end">
                   <div className="form-group col-md-2">
                     <label htmlFor="reporteEstado">Estado</label>
@@ -1194,50 +1569,7 @@ export default function OtrasActividadesPage() {
                   </div>
                 </div>
 
-                <div className="row mb-3">
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Total</small>
-                      <strong>{resumenReporte.total}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Aprobadas</small>
-                      <strong>{resumenReporte.aprobadas}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Pendientes</small>
-                      <strong>{resumenReporte.pendientes}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Presenciales</small>
-                      <strong>{resumenReporte.presenciales}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Virtuales</small>
-                      <strong>{resumenReporte.virtuales}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Ingresos</small>
-                      <strong>Q {resumenReporte.ingresos.toFixed(2)}</strong>
-                    </div>
-                  </div>
-                  <div className="col-md-2 col-6 mb-2">
-                    <div className="border rounded p-2 h-100">
-                      <small className="text-muted d-block">Confirmados</small>
-                      <strong>{resumenReporte.confirmados}</strong>
-                    </div>
-                  </div>
-                </div>
+                
 
                 <div className="table-responsive">
                   <table className="table table-sm table-striped mb-0">
@@ -1307,21 +1639,10 @@ export default function OtrasActividadesPage() {
                       <tr>
                         <th>Codigo</th>
                         <th>Actividad</th>
-                        <th>Tipo</th>
-                        <th>Ubicacion</th>
                         <th>Modalidad</th>
                         <th>Costo</th>
                         <th>Fecha</th>
-                        <th>Hora inicio</th>
-                        <th>Hora final</th>
-                        <th>Acceso virtual</th>
-                        <th>Participantes</th>
-                        <th>Confirmados</th>
-                        <th>Creador</th>
-                        <th>Aprobador</th>
-                        <th>Estado</th>
-                        <th>Emitir certificado</th>
-                        <th>Certificados</th>
+                        <th>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1329,40 +1650,23 @@ export default function OtrasActividadesPage() {
                         <tr key={actividad.id}>
                           <td>{actividad.id}</td>
                           <td>{actividad.nombre}</td>
-                          <td>{actividad.tipo}</td>
-                          <td>{actividad.ubicacion}</td>
                           <td>{actividad.modalidad}</td>
-                          <td>{actividad.costo === "Pago" ? `Q ${actividad.monto}` : "Gratuita"}</td>
+                          <td>{valorCosto(actividad)}</td>
                           <td>{actividad.fecha}</td>
-                          <td>{actividad.horaInicio || "-"}</td>
-                          <td>{actividad.horaFin || "-"}</td>
                           <td>
-                            {actividad.modalidad === "Virtual" && actividad.meetUrl ? (
-                              <a href={actividad.meetUrl} target="_blank" rel="noreferrer">
-                                Abrir Meet
-                              </a>
-                            ) : (
-                              "-"
-                            )}
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-primary"
+                              onClick={() => setActividadDetalle(actividad)}
+                            >
+                              Ver actividad
+                            </button>
                           </td>
-                          <td>{actividad.participantes}</td>
-                          <td>{actividad.asistentesConfirmados || 0}</td>
-                          <td>{actividad.creador}</td>
-                          <td>{actividad.aprobador}</td>
-                          <td>
-                            <span className={`badge ${badgeEstadoClass(actividad.estado)}`}>
-                              {actividad.estado}
-                            </span>
-                          </td>
-                          <td>
-                            <input type="checkbox" checked={actividad.emiteCertificado} readOnly />
-                          </td>
-                          <td>{actividad.certificados}</td>
                         </tr>
                       ))}
                       {!actividadesFiltradas.length ? (
                         <tr>
-                          <td colSpan="17" className="text-center text-muted py-4">
+                          <td colSpan="6" className="text-center text-muted py-4">
                             No hay actividades que coincidan con la busqueda.
                           </td>
                         </tr>
@@ -1372,6 +1676,117 @@ export default function OtrasActividadesPage() {
                 </div>
               </div>
             </div>
+            ) : null}
+
+            {actividadDetalle ? (
+              <div
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  backgroundColor: "rgba(0, 0, 0, 0.45)",
+                  zIndex: 1060,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "16px",
+                }}
+                onClick={() => setActividadDetalle(null)}
+              >
+                <div
+                  className="card mb-0"
+                  style={{ width: "100%", maxWidth: "820px", maxHeight: "90vh", overflowY: "auto" }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="card-header d-flex justify-content-between align-items-center">
+                    <h5 className="mb-0">Detalle completo de actividad</h5>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-secondary"
+                      onClick={() => setActividadDetalle(null)}
+                    >
+                      Cerrar
+                    </button>
+                  </div>
+                  <div className="card-body">
+                    <div className="row">
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Codigo</small>
+                        <strong>{actividadDetalle.id}</strong>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Estado</small>
+                        <span className={`badge ${badgeEstadoClass(actividadDetalle.estado)}`}>
+                          {actividadDetalle.estado}
+                        </span>
+                      </div>
+                      <div className="col-md-12 mb-2">
+                        <small className="text-muted d-block">Actividad</small>
+                        <strong>{actividadDetalle.nombre}</strong>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Tipo</small>
+                        <span>{actividadDetalle.tipo}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Modalidad</small>
+                        <span>{actividadDetalle.modalidad}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Fecha</small>
+                        <span>{actividadDetalle.fecha}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Horario</small>
+                        <span>
+                          {actividadDetalle.horaInicio || "-"} - {actividadDetalle.horaFin || "-"}
+                        </span>
+                      </div>
+                      <div className="col-md-12 mb-2">
+                        <small className="text-muted d-block">
+                          {actividadDetalle.modalidad === "Virtual" ? "Enlace virtual" : "Ubicacion"}
+                        </small>
+                        {actividadDetalle.modalidad === "Virtual" && actividadDetalle.meetUrl ? (
+                          <a href={actividadDetalle.meetUrl} target="_blank" rel="noreferrer">
+                            {actividadDetalle.meetUrl}
+                          </a>
+                        ) : (
+                          <span>{actividadDetalle.ubicacion || "-"}</span>
+                        )}
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Costo</small>
+                        <span>{valorCosto(actividadDetalle)}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Participantes / Confirmados</small>
+                        <span>
+                          {Number(actividadDetalle.participantes) || 0} / {Number(actividadDetalle.asistentesConfirmados) || 0}
+                        </span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Creador</small>
+                        <span>{actividadDetalle.creador || "-"}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Aprobador</small>
+                        <span>{actividadDetalle.aprobador || "-"}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Emitir certificado</small>
+                        <span>{actividadDetalle.emiteCertificado ? "Si" : "No"}</span>
+                      </div>
+                      <div className="col-md-6 mb-2">
+                        <small className="text-muted d-block">Certificados</small>
+                        <span>{actividadDetalle.certificados || "-"}</span>
+                      </div>
+                      <div className="col-md-12 mb-0">
+                        <small className="text-muted d-block">Descripcion</small>
+                        <span>{actividadDetalle.descripcion || "Sin descripcion"}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             ) : null}
               </>
             )}
