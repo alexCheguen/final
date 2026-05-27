@@ -1,0 +1,38 @@
+import jwt from 'jsonwebtoken';
+
+if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET no definido en .env.local');
+if (!process.env.JWT_REFRESH_SECRET) throw new Error('JWT_REFRESH_SECRET no definido en .env.local');
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+
+export function signAccess(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
+}
+
+export function signRefresh(payload) {
+  return jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: '7d' });
+}
+
+export function verifyAccess(token) {
+  return jwt.verify(token, JWT_SECRET);
+}
+
+export function verifyRefresh(token) {
+  return jwt.verify(token, JWT_REFRESH_SECRET);
+}
+
+export function getTokenFromRequest(request) {
+  const auth = request.headers.get('authorization') ?? '';
+  if (auth.startsWith('Bearer ')) return auth.slice(7);
+  return null;
+}
+
+export function getUserFromRequest(request) {
+  const token = getTokenFromRequest(request);
+  if (!token) return null;
+  try {
+    return verifyAccess(token);
+  } catch {
+    return null;
+  }
+}
