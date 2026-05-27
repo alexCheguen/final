@@ -938,8 +938,8 @@ export default function OtrasActividadesPage() {
                   <div className="card-header">
                     <h5 className="mb-0">
                       {actividadEnEdicionId
-                        ? `Editar actividad ${actividadEnEdicionId} (Rango 2)`
-                        : "Crear actividad (Rango 2)"}
+                        ? `Editar actividad ${actividadEnEdicionId} `
+                        : "Crear actividad"}
                     </h5>
                   </div>
                   <div className="card-body">
